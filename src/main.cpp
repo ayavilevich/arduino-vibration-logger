@@ -3,7 +3,7 @@
 #include <SD.h> // https://www.arduino.cc/en/reference/SD
 
 #include "SparkFun_ADXL345.h" // https://github.com/sparkfun/SparkFun_ADXL345_Arduino_Library/blob/master/examples/SparkFun_ADXL345_Example/SparkFun_ADXL345_Example.ino
-#include "RTClib.h" // https://github.com/adafruit/RTClib/blob/master/examples/ds1307/ds1307.ino
+#include "RTClib.h"			  // https://github.com/adafruit/RTClib/blob/master/examples/ds1307/ds1307.ino
 
 /*********** COMMUNICATION SELECTION ***********/
 /*    Comment Out The One You Are Not Using    */
@@ -79,7 +79,7 @@ void setup()
 {
 
 	Serial.begin(115200); // Start the serial terminal
-	Serial.println("SparkFun ADXL345 Accelerometer Hook Up Guide Example");
+	Serial.println("Vibration logger");
 
 	if (!rtc.begin())
 	{
@@ -89,6 +89,7 @@ void setup()
 			delay(10);
 	}
 
+	Serial.println("Initializing RTC");
 	if (!rtc.isrunning())
 	{
 		Serial.println("RTC is NOT running, let's set the time!");
@@ -99,6 +100,13 @@ void setup()
 		// January 21, 2014 at 3am you would call:
 		// rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
 	}
+
+	// When time needs to be re-set on a previously configured device, the
+	// following line sets the RTC to the date & time this sketch was compiled
+	// rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+	// This line sets the RTC with an explicit date & time, for example to set
+	// January 21, 2014 at 3am you would call:
+	// rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
 
 	Serial.print("Initializing SD card...");
 	// we'll use the initialization code from the utility libraries
@@ -173,7 +181,7 @@ int calculateVibrationLevel()
 	int px, py, pz; // previous measurement
 	int intensity = 0;
 	adxl.readAccel(&px, &py, &pz);
-	for(int i=0;i<VIBRATION_SAMPLES;i++)
+	for (int i = 0; i < VIBRATION_SAMPLES; i++)
 	{
 		adxl.readAccel(&x, &y, &z);
 		intensity += abs(x - px);
@@ -188,38 +196,37 @@ int calculateVibrationLevel()
 
 void loop()
 {
+	// generate file name
 	DateTime now = rtc.now();
+	const int filenameLength = 8 + 1 + 3 + 1;
+	char filename[filenameLength];
+	snprintf(filename, filenameLength, "%d%02d%02d.csv", now.year(), now.month(), now.day());
+	// Serial.println(filename);
 
-	Serial.print(now.year(), DEC);
-	Serial.print('/');
-	Serial.print(now.month(), DEC);
-	Serial.print('/');
-	Serial.print(now.day(), DEC);
-	Serial.print(" ");
-	Serial.print(now.hour(), DEC);
-	Serial.print(':');
-	Serial.print(now.minute(), DEC);
-	Serial.print(':');
-	Serial.print(now.second(), DEC);
-	Serial.print(' ');
-	Serial.println(calculateVibrationLevel());
+	// calculate vibration level
+	int vibrationLevel = calculateVibrationLevel();
+	// Serial.println(vibrationLevel);
 
-	// Accelerometer Readings
-	// int x, y, z;
-	// adxl.readAccel(&x, &y, &z); // Read the accelerometer values and store them in variables declared above x,y,z
+	// render data row
+	const int dataRowLength = 8 + 1 + 10 + 1;
+	char dataRow[dataRowLength];
+	snprintf(dataRow, dataRowLength, "%02d:%02d:%02d,%d", now.hour(), now.minute(), now.second(), vibrationLevel);
+	// Serial.println(dataRow);
 
-	// Output Results to Serial
-	/* UNCOMMENT TO VIEW X Y Z ACCELEROMETER VALUES */
-	// Serial.print(x);
-	// Serial.print(", ");
-	// Serial.print(y);
-	// Serial.print(", ");
-	// Serial.println(z);
+	// write to file
+	File dataFile = SD.open(filename, FILE_WRITE);
+	if (dataFile) // if the file is available, write to it:
+	{
+		dataFile.println(dataRow);
+		dataFile.close();
+		// print to the serial port too:
+		Serial.println(dataRow);
+	}
+	else
+	{
+		Serial.println("error opening file");
+	}
 
-	// ADXL_ISR();
-	// You may also choose to avoid using interrupts and simply run the functions within ADXL_ISR();
-	//  and place it within the loop instead.
-	// This may come in handy when it doesn't matter when the action occurs.
-
-	delay(100);
+	// wait until next measurement
+	delay(1000);
 }
