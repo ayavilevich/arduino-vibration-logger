@@ -1,23 +1,85 @@
 #include <Arduino.h>
+#include <SPI.h>
+#include <SD.h> // https://www.arduino.cc/en/reference/SD
 
-#include "SparkFun_ADXL345.h"
-#include "RTClib.h"
+#include "SparkFun_ADXL345.h" // https://github.com/sparkfun/SparkFun_ADXL345_Arduino_Library/blob/master/examples/SparkFun_ADXL345_Example/SparkFun_ADXL345_Example.ino
+#include "RTClib.h" // https://github.com/adafruit/RTClib/blob/master/examples/ds1307/ds1307.ino
 
 /*********** COMMUNICATION SELECTION ***********/
 /*    Comment Out The One You Are Not Using    */
 // ADXL345 adxl = ADXL345(10);           // USE FOR SPI COMMUNICATION, ADXL345(CS_PIN);
 ADXL345 adxl = ADXL345(); // USE FOR I2C COMMUNICATION
+const int VIBRATION_SAMPLES = 10;
 
 RTC_DS1307 rtc;
 
-/******************** SETUP ********************/
-/*          Configure ADXL345 Settings         */
+// set up variables using the SD utility library functions:
+Sd2Card card;
+SdVolume volume;
+SdFile root;
+const int SD_CS_PIN = 10;
+
+// functions
+
+void printSdCardInfo()
+{
+	// print the type of card
+	Serial.println();
+	Serial.print("Card type:         ");
+	switch (card.type())
+	{
+	case SD_CARD_TYPE_SD1:
+		Serial.println("SD1");
+		break;
+	case SD_CARD_TYPE_SD2:
+		Serial.println("SD2");
+		break;
+	case SD_CARD_TYPE_SDHC:
+		Serial.println("SDHC");
+		break;
+	default:
+		Serial.println("Unknown");
+	}
+	// Now we will try to open the 'volume'/'partition' - it should be FAT16 or FAT32
+	if (!volume.init(card))
+	{
+		Serial.println("Could not find FAT16/FAT32 partition.\nMake sure you've formatted the card");
+		while (1)
+			;
+	}
+	Serial.print("Clusters:          ");
+	Serial.println(volume.clusterCount());
+	Serial.print("Blocks x Cluster:  ");
+	Serial.println(volume.blocksPerCluster());
+	Serial.print("Total Blocks:      ");
+	Serial.println(volume.blocksPerCluster() * volume.clusterCount());
+	Serial.println();
+	// print the type and size of the first FAT-type volume
+	uint32_t volumesize;
+	Serial.print("Volume type is:    FAT");
+	Serial.println(volume.fatType(), DEC);
+	volumesize = volume.blocksPerCluster(); // clusters are collections of blocks
+	volumesize *= volume.clusterCount();	// we'll have a lot of clusters
+	volumesize /= 2;						// SD card blocks are always 512 bytes (2 blocks are 1KB)
+	Serial.print("Volume size (Kb):  ");
+	Serial.println(volumesize);
+	Serial.print("Volume size (Mb):  ");
+	volumesize /= 1024;
+	Serial.println(volumesize);
+	Serial.print("Volume size (Gb):  ");
+	Serial.println((float)volumesize / 1024.0);
+	Serial.println("\nFiles found on the card (name, date and size in bytes): ");
+	root.openRoot(volume);
+	// list all files in the card with date and size
+	root.ls(LS_R | LS_DATE | LS_SIZE);
+	root.close();
+}
+
 void setup()
 {
 
 	Serial.begin(115200); // Start the serial terminal
 	Serial.println("SparkFun ADXL345 Accelerometer Hook Up Guide Example");
-	Serial.println();
 
 	if (!rtc.begin())
 	{
@@ -38,6 +100,25 @@ void setup()
 		// rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
 	}
 
+	Serial.print("Initializing SD card...");
+	// we'll use the initialization code from the utility libraries
+	// since we're just testing if the card is working!
+	if (!card.init(SPI_HALF_SPEED, SD_CS_PIN))
+	{
+		Serial.println("initialization failed. Things to check:");
+		Serial.println("* is a card inserted?");
+		Serial.println("* is your wiring correct?");
+		Serial.println("* did you change the chipSelect pin to match your shield or module?");
+		while (1)
+			;
+	}
+	else
+	{
+		Serial.println("Wiring is correct and a card is present.");
+	}
+	printSdCardInfo();
+
+	// accelerometer init
 	adxl.powerOn(); // Power on the ADXL345
 
 	adxl.setRangeSetting(2); // Give the range settings
@@ -85,8 +166,26 @@ void setup()
 	//attachInterrupt(digitalPinToInterrupt(interruptPin), ADXL_ISR, RISING);   // Attach Interrupt
 }
 
-/****************** MAIN CODE ******************/
-/*     Accelerometer Readings and Interrupt    */
+int calculateVibrationLevel()
+{
+	// Accelerometer Readings
+	int x, y, z;
+	int px, py, pz; // previous measurement
+	int intensity = 0;
+	adxl.readAccel(&px, &py, &pz);
+	for(int i=0;i<VIBRATION_SAMPLES;i++)
+	{
+		adxl.readAccel(&x, &y, &z);
+		intensity += abs(x - px);
+		intensity += abs(y - py);
+		intensity += abs(z - pz);
+		px = x;
+		py = y;
+		pz = z;
+	}
+	return intensity;
+}
+
 void loop()
 {
 	DateTime now = rtc.now();
@@ -96,27 +195,26 @@ void loop()
 	Serial.print(now.month(), DEC);
 	Serial.print('/');
 	Serial.print(now.day(), DEC);
-	Serial.print(" (");
-	// Serial.print(daysOfTheWeek[now.dayOfTheWeek()]);
-	Serial.print(") ");
+	Serial.print(" ");
 	Serial.print(now.hour(), DEC);
 	Serial.print(':');
 	Serial.print(now.minute(), DEC);
 	Serial.print(':');
 	Serial.print(now.second(), DEC);
-	Serial.println();
+	Serial.print(' ');
+	Serial.println(calculateVibrationLevel());
 
 	// Accelerometer Readings
-	int x, y, z;
-	adxl.readAccel(&x, &y, &z); // Read the accelerometer values and store them in variables declared above x,y,z
+	// int x, y, z;
+	// adxl.readAccel(&x, &y, &z); // Read the accelerometer values and store them in variables declared above x,y,z
 
 	// Output Results to Serial
 	/* UNCOMMENT TO VIEW X Y Z ACCELEROMETER VALUES */
-	Serial.print(x);
-	Serial.print(", ");
-	Serial.print(y);
-	Serial.print(", ");
-	Serial.println(z);
+	// Serial.print(x);
+	// Serial.print(", ");
+	// Serial.print(y);
+	// Serial.print(", ");
+	// Serial.println(z);
 
 	// ADXL_ISR();
 	// You may also choose to avoid using interrupts and simply run the functions within ADXL_ISR();
