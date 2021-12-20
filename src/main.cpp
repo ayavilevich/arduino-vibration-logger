@@ -1,28 +1,61 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <SPI.h>
+// #define BASIC_SD
+#ifdef BASIC_SD
 #include <SD.h> // https://www.arduino.cc/en/reference/SD
+#else
+#include "SdFat.h" // https://github.com/greiman/SdFat
+#endif
+#include <MemoryFree.h>
 
 #include "SparkFun_ADXL345.h" // https://github.com/sparkfun/SparkFun_ADXL345_Arduino_Library/blob/master/examples/SparkFun_ADXL345_Example/SparkFun_ADXL345_Example.ino
 #include "RTClib.h"			  // https://github.com/adafruit/RTClib/blob/master/examples/ds1307/ds1307.ino
 
-/*********** COMMUNICATION SELECTION ***********/
-/*    Comment Out The One You Are Not Using    */
 // ADXL345 adxl = ADXL345(10);           // USE FOR SPI COMMUNICATION, ADXL345(CS_PIN);
 ADXL345 adxl = ADXL345(); // USE FOR I2C COMMUNICATION
 const int VIBRATION_SAMPLES = 10;
 
 RTC_DS1307 rtc;
 
-// set up variables using the SD utility library functions:
-Sd2Card card;
-SdVolume volume;
-SdFile root;
 const int SD_CS_PIN = 10;
+#ifdef BASIC_SD
+Sd2Card card;
+#else
+// Test with reduced SPI speed for breadboards.  SD_SCK_MHZ(4) will select
+// the highest speed supported by the board that is not over 4 MHz.
+// Change SPI_SPEED to SD_SCK_MHZ(50) for best performance.
+#define SPI_SPEED SD_SCK_MHZ(4)
+
+// Note: Uno will not support SD_FAT_TYPE = 3.
+// SD_FAT_TYPE = 0 for SdFat/File as defined in SdFatConfig.h,
+// 1 for FAT16/FAT32, 2 for exFAT, 3 for FAT16/FAT32 and exFAT.
+#define SD_FAT_TYPE 1 // 1 for the 128MB card
+
+#if SD_FAT_TYPE == 0
+SdFat sd;
+typedef File file_t;
+#elif SD_FAT_TYPE == 1
+SdFat32 sd;
+typedef File32 file_t;
+#elif SD_FAT_TYPE == 2
+SdExFat sd;
+typedef ExFile file_t;
+#elif SD_FAT_TYPE == 3
+SdFs sd;
+typedef FsFile file_t;
+#else // SD_FAT_TYPE
+#error Invalid SD_FAT_TYPE
+#endif // SD_FAT_TYPE
+#endif // BASIC_SD
 
 // functions
 
 void printSdCardInfo()
 {
+#ifdef BASIC_SD
+	SdVolume volume;
+	SdFile root;
 	// print the type of card
 	Serial.println();
 	Serial.print("Card type:         ");
@@ -73,26 +106,98 @@ void printSdCardInfo()
 	// list all files in the card with date and size
 	root.ls(LS_R | LS_DATE | LS_SIZE);
 	root.close();
+#else
+	uint32_t size = sd.card()->sectorCount();
+	if (size == 0)
+	{
+		Serial.println(F("Can't determine the card size."));
+		// cardOrSpeed();
+		return;
+	}
+	uint32_t sizeMB = 0.000512 * size + 0.5;
+	Serial.print(F("Card size: "));
+	Serial.println(sizeMB);
+	Serial.println(F(" MB (MB = 1,000,000 bytes)"));
+	Serial.print(F("Volume is FAT"));
+	Serial.println((int(sd.vol()->fatType())));
+	Serial.print(F("Cluster size (bytes): "));
+	Serial.println(sd.vol()->bytesPerCluster());
+
+	Serial.println(F("Files found (date time size name):"));
+	sd.ls(LS_R | LS_DATE | LS_SIZE);
+
+	if ((sizeMB > 1100 && sd.vol()->sectorsPerCluster() < 64) || (sizeMB < 2200 && sd.vol()->fatType() == 32))
+	{
+		Serial.println(F("This card should be reformatted for best performance."));
+		Serial.println(F("Use a cluster size of 32 KB for cards larger than 1 GB."));
+		Serial.println(F("Only cards larger than 2 GB should be formatted FAT32."));
+		// reformatMsg();
+		return;
+	}
+#endif
+}
+
+void i2cScanner()
+{
+	byte error, address;
+	int nDevices;
+
+	Serial.println("Scanning...");
+
+	nDevices = 0;
+	for (address = 1; address < 127; address++)
+	{
+		// The i2c_scanner uses the return value of
+		// the Write.endTransmisstion to see if
+		// a device did acknowledge to the address.
+		Wire.beginTransmission(address);
+		error = Wire.endTransmission();
+
+		if (error == 0)
+		{
+			Serial.print("I2C device found at address 0x");
+			if (address < 16)
+				Serial.print("0");
+			Serial.print(address, HEX);
+			Serial.println("  !");
+
+			nDevices++;
+		}
+		else if (error == 4)
+		{
+			Serial.print("Unknown error at address 0x");
+			if (address < 16)
+				Serial.print("0");
+			Serial.println(address, HEX);
+		}
+	}
+	if (nDevices == 0)
+		Serial.println("No I2C devices found\n");
+	else
+		Serial.println("done\n");
 }
 
 void setup()
 {
 
 	Serial.begin(115200); // Start the serial terminal
-	Serial.println("Vibration logger");
+	Serial.println(F("Vibration logger"));
+
+	Wire.begin();
+	// i2cScanner();
 
 	if (!rtc.begin())
 	{
-		Serial.println("Couldn't find RTC");
+		Serial.println(F("Couldn't find RTC"));
 		Serial.flush();
 		while (1)
 			delay(10);
 	}
 
-	Serial.println("Initializing RTC");
+	Serial.println(F("Initializing RTC"));
 	if (!rtc.isrunning())
 	{
-		Serial.println("RTC is NOT running, let's set the time!");
+		Serial.println(F("RTC is NOT running, let's set the time!"));
 		// When time needs to be set on a new device, or after a power loss, the
 		// following line sets the RTC to the date & time this sketch was compiled
 		rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
@@ -108,21 +213,53 @@ void setup()
 	// January 21, 2014 at 3am you would call:
 	// rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
 
-	Serial.print("Initializing SD card...");
+	Serial.println(F("Initializing SD card..."));
 	// we'll use the initialization code from the utility libraries
 	// since we're just testing if the card is working!
+#ifdef BASIC_SD
 	if (!card.init(SPI_HALF_SPEED, SD_CS_PIN))
 	{
-		Serial.println("initialization failed. Things to check:");
-		Serial.println("* is a card inserted?");
-		Serial.println("* is your wiring correct?");
-		Serial.println("* did you change the chipSelect pin to match your shield or module?");
+		Serial.println(F("initialization failed. Things to check:"));
+		// Serial.println("* is a card inserted?");
+		// Serial.println("* is your wiring correct?");
+		// Serial.println("* did you change the chipSelect pin to match your shield or module?");
 		while (1)
 			;
 	}
+#else
+	if (!sd.begin(SD_CS_PIN, SPI_SPEED))
+	{
+		if (sd.card()->errorCode())
+		{
+			Serial.println(F(
+				"\nSD initialization failed.\n"
+				"Do not reformat the card!\n"
+				"Is the card correctly inserted?\n"
+				"Is chipSelect set to the correct value?\n"
+				"Does another SPI device need to be disabled?\n"
+				"Is there a wiring/soldering problem?"));
+			Serial.print(F("errorCode: "));
+			Serial.println(int(sd.card()->errorCode()));
+			Serial.print(F("ErrorData: "));
+			Serial.println(int(sd.card()->errorData()));
+			return;
+		}
+		Serial.println(F("Card successfully initialized."));
+		if (sd.vol()->fatType() == 0)
+		{
+			Serial.println(F("Can't find a valid FAT16/FAT32 partition."));
+			// reformatMsg();
+			return;
+		}
+		Serial.println(F("Can't determine error type"));
+
+		while (1)
+			;
+	}
+#endif
 	else
 	{
-		Serial.println("Wiring is correct and a card is present.");
+		Serial.println(F("Wiring is correct and a card is present."));
 	}
 	printSdCardInfo();
 
@@ -135,43 +272,10 @@ void setup()
 							 // Lower Values = Greater Sensitivity
 
 	adxl.setSpiBit(0); // Configure the device to be in 4 wire SPI mode when set to '0' or 3 wire SPI mode when set to 1
-					   // Default: Set to 1
-					   // SPI pins on the ATMega328: 11, 12 and 13 as reference in SPI Library
+	// Default: Set to 1
+	// SPI pins on the ATMega328: 11, 12 and 13 as reference in SPI Library
 
-	/*
-	adxl.setActivityXYZ(1, 0, 0);  // Set to activate movement detection in the axes "adxl.setActivityXYZ(X, Y, Z);" (1 == ON, 0 == OFF)
-	adxl.setActivityThreshold(75); // 62.5mg per increment   // Set activity   // Inactivity thresholds (0-255)
-
-	adxl.setInactivityXYZ(1, 0, 0);	 // Set to detect inactivity in all the axes "adxl.setInactivityXYZ(X, Y, Z);" (1 == ON, 0 == OFF)
-	adxl.setInactivityThreshold(75); // 62.5mg per increment   // Set inactivity // Inactivity thresholds (0-255)
-	adxl.setTimeInactivity(10);		 // How many seconds of no activity is inactive?
-
-	adxl.setTapDetectionOnXYZ(0, 0, 1); // Detect taps in the directions turned ON "adxl.setTapDetectionOnX(X, Y, Z);" (1 == ON, 0 == OFF)
-
-	// Set values for what is considered a TAP and what is a DOUBLE TAP (0-255)
-	adxl.setTapThreshold(50);	  // 62.5 mg per increment
-	adxl.setTapDuration(15);	  // 625 μs per increment
-	adxl.setDoubleTapLatency(80); // 1.25 ms per increment
-	adxl.setDoubleTapWindow(200); // 1.25 ms per increment
-
-	// Set values for what is considered FREE FALL (0-255)
-	adxl.setFreeFallThreshold(7); // (5 - 9) recommended - 62.5mg per increment
-	adxl.setFreeFallDuration(30); // (20 - 70) recommended - 5ms per increment
-
-	// Setting all interupts to take place on INT1 pin
-	//adxl.setImportantInterruptMapping(1, 1, 1, 1, 1);     // Sets "adxl.setEveryInterruptMapping(single tap, double tap, free fall, activity, inactivity);"
-	// Accepts only 1 or 2 values for pins INT1 and INT2. This chooses the pin on the ADXL345 to use for Interrupts.
-	// This library may have a problem using INT2 pin. Default to INT1 pin.
-
-	// Turn on Interrupts for each mode (1 == ON, 0 == OFF)
-	adxl.InactivityINT(1);
-	adxl.ActivityINT(1);
-	adxl.FreeFallINT(1);
-	adxl.doubleTapINT(1);
-	adxl.singleTapINT(1);
-	*/
-
-	//attachInterrupt(digitalPinToInterrupt(interruptPin), ADXL_ISR, RISING);   // Attach Interrupt
+	Serial.println(F("Done setup"));
 }
 
 int calculateVibrationLevel()
@@ -196,11 +300,17 @@ int calculateVibrationLevel()
 
 void loop()
 {
+	// debug
+	// Serial.print("freeMemory()=");
+	// Serial.println(freeMemory());
+
 	// generate file name
 	DateTime now = rtc.now();
 	const int filenameLength = 8 + 1 + 3 + 1;
 	char filename[filenameLength];
 	snprintf(filename, filenameLength, "%d%02d%02d.csv", now.year(), now.month(), now.day());
+	// strcpy(filename, "test.txt");
+	// Serial.println(strlen(filename));
 	// Serial.println(filename);
 
 	// calculate vibration level
@@ -210,21 +320,30 @@ void loop()
 	// render data row
 	const int dataRowLength = 8 + 1 + 10 + 1;
 	char dataRow[dataRowLength];
-	snprintf(dataRow, dataRowLength, "%02d:%02d:%02d,%d", now.hour(), now.minute(), now.second(), vibrationLevel);
-	// Serial.println(dataRow);
+	snprintf(dataRow, dataRowLength, "%02d:%02d:%02d,%d", (int)now.hour(), (int)now.minute(), (int)now.second(), vibrationLevel);
+	// strcpy(dataRow, "testData");
+
+	// print to the serial port
+	Serial.println(dataRow);
 
 	// write to file
-	File dataFile = SD.open(filename, FILE_WRITE);
+#ifdef BASIC_SD
+	File dataFile = SD.open(filename, FILE_WRITE | O_APPEND);
 	if (dataFile) // if the file is available, write to it:
+#else
+	file_t dataFile;
+	if (dataFile.open(filename, O_RDWR | O_CREAT | O_APPEND | O_AT_END))
+#endif
 	{
 		dataFile.println(dataRow);
 		dataFile.close();
-		// print to the serial port too:
-		Serial.println(dataRow);
 	}
 	else
 	{
-		Serial.println("error opening file");
+		Serial.print(F("Error opening file - "));
+		Serial.println(filename);
+		Serial.print(F("freeMemory()="));
+		Serial.println(freeMemory());
 	}
 
 	// wait until next measurement
