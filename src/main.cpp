@@ -15,6 +15,7 @@
 // ADXL345 adxl = ADXL345(10);           // USE FOR SPI COMMUNICATION, ADXL345(CS_PIN);
 ADXL345 adxl = ADXL345(); // USE FOR I2C COMMUNICATION
 const int VIBRATION_SAMPLES = 10;
+const int MEASUREMENT_INTERVAL_MS = 1000; // log measure every x ms
 
 RTC_DS1307 rtc;
 
@@ -309,9 +310,6 @@ void loop()
 	const int filenameLength = 8 + 1 + 3 + 1;
 	char filename[filenameLength];
 	snprintf(filename, filenameLength, "%d%02d%02d.csv", now.year(), now.month(), now.day());
-	// strcpy(filename, "test.txt");
-	// Serial.println(strlen(filename));
-	// Serial.println(filename);
 
 	// calculate vibration level
 	int vibrationLevel = calculateVibrationLevel();
@@ -321,7 +319,6 @@ void loop()
 	const int dataRowLength = 8 + 1 + 10 + 1;
 	char dataRow[dataRowLength];
 	snprintf(dataRow, dataRowLength, "%02d:%02d:%02d,%d", (int)now.hour(), (int)now.minute(), (int)now.second(), vibrationLevel);
-	// strcpy(dataRow, "testData");
 
 	// print to the serial port
 	Serial.println(dataRow);
@@ -347,5 +344,5 @@ void loop()
 	}
 
 	// wait until next measurement
-	delay(1000);
+	delay(MEASUREMENT_INTERVAL_MS);
 }
